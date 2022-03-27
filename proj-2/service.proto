@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package service;
+
+service Hash {
+    rpc Create(HashRequest) returns (HashReply) {}
+    rpc Read(HashRequest) returns (HashReply) {}
+    rpc Update(HashRequest) returns (HashReply) {}
+    rpc Delete(HashRequest) returns (HashReply) {}
+}
+
+message HashRequest {
+    string conteudo = 1;
+    int32 tam_chave = 2;
+    string chave = 3;
+    int32 tam_valor = 4;
+    string valor = 5;
+    string erro = 6;
+    string servico = 7;
+}
+
+message HashReply {
+    int32 codigo = 1;
+    string pacote = 2;
+}
