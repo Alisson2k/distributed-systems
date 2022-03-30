@@ -45,3 +45,8 @@ def gen_finger_table(max_keys, id, servers, N):
         finger_table[pos_salto] = responsavel
 
     return finger_table
+
+INITIAL_PORT = 4000
+
+def gen_group_hosts(group_id, group_count):
+    return [f'localhost:{INITIAL_PORT + (group_count * group_id) + i}' for i in range(group_count)]

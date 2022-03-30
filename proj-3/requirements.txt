@@ -1,4 +1,5 @@
 grpcio==1.43.0
 grpcio-tools==1.43.0
 protobuf==3.19.1
+pysyncobj==0.3.10
 six==1.16.0

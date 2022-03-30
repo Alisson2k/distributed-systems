@@ -1,4 +1,5 @@
 from concurrent import futures
+from pysyncobj import SyncObj, SyncObjConf, replicated
 import hashlib
 import grpc
 import service_pb2
@@ -16,6 +17,7 @@ log.basicConfig(
     ]
 )
 
+GROUP_COUNT = 3
 NODES = 5
 MAX_KEYS = 32
 MAX_GRPC_WORKERS = 10
@@ -61,7 +63,7 @@ class HashService(service_pb2_grpc.HashServicer):
             else:
                 choice = val[escolha-1]
 
-        print(f'[+] Chave: [{hash_key}], requisição transferida do nó [{self.node.id}] para o nó [{choice}]')
+        log.info(f'[+] Chave: [{hash_key}], requisição transferida do nó [{self.node.id}] para o nó [{choice}]')
 
         return (choice, not maior_limite)
 
@@ -70,7 +72,7 @@ class HashService(service_pb2_grpc.HashServicer):
 
         if request.atual or node_id == self.node.id:
             try:
-                self.node.hash[request.chave] = request.valor
+                self.node.create(request.chave, request.valor)
                 return service_pb2.HashReply(codigo=0, resposta=f'Receita [{request.chave}] criada com sucesso')
             except Exception as e:
                 return service_pb2.HashReply(codigo=1, resposta=f'ERRO: {str(e)}')
@@ -82,7 +84,7 @@ class HashService(service_pb2_grpc.HashServicer):
         
         if request.atual or node_id == self.node.id:
             try:
-                valor = self.node.hash[request.chave]
+                valor = self.node.read(request.chave)
                 return service_pb2.HashReply(codigo=0, resposta=valor)
             except Exception as e:
                 return service_pb2.HashReply(codigo=1, resposta=f'ERRO: {str(e)}')
@@ -94,7 +96,7 @@ class HashService(service_pb2_grpc.HashServicer):
         
         if request.atual or node_id == self.node.id:
             try:
-                self.node.hash[request.chave] = request.valor
+                self.node.update(request.chave, request.valor)
                 return service_pb2.HashReply(codigo=0, resposta=f'Receita [{request.chave}] atualizada com sucesso')
             except Exception as e:
                 return service_pb2.HashReply(codigo=1, resposta=f'ERRO: {str(e)}')
@@ -106,25 +108,51 @@ class HashService(service_pb2_grpc.HashServicer):
         
         if request.atual or node_id == self.node.id:
             try:
-                del self.node.hash[request.chave]
+                self.node.delete(request.chave)
                 return service_pb2.HashReply(codigo=0, resposta=f'Receita [{request.chave}] deletada com sucesso')
             except Exception as e:
                 return service_pb2.HashReply(codigo=1, resposta=f'ERRO: {str(e)}')
         else:
             return self.send_to(node_id, request.comando, request.chave, request.valor, atual)
 
+class HashTable(SyncObj):
+
+    def __init__(self, node_addr, partner_addrs):
+        if VERBOSE:
+            print(f"Initializing [{node_addr}], partners {partner_addrs}")
+
+        cfg = SyncObjConf(dynamicMembershipChange = True)
+        super(HashTable, self).__init__(node_addr, partner_addrs, cfg)
+        self.hash = dict()
+
+    @replicated
+    def create(self, chave, valor):
+        self.hash[chave] = valor
+
+    def read(self, chave):
+        return self.hash[chave]
+
+    @replicated
+    def update(self, chave, valor):
+        self.hash[chave] = valor
+
+    @replicated
+    def delete(self, chave):
+        del self.hash[chave]
+
 class Node(object):
-    def __init__(self, ip, port, index, id, value_range, send_to):
+    def __init__(self, ip, port, index, id, value_range, send_to, group_hosts):
         self.ip = ip
         self.port = port
         self.index = index
         self.id = id
         self.range = value_range
         self.send_to = send_to
-        self.hash = dict()
+        self.group_hosts = group_hosts
         self.fingertable = dict()
 
     def run(self):
+        self.groups = self.run_raft()
         self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=MAX_GRPC_WORKERS))
 
         service_pb2_grpc.add_HashServicer_to_server(HashService(self, self.send_to), self.server)
@@ -135,6 +163,31 @@ class Node(object):
 
         while True:
             pass
+
+    def create(self, chave, valor):
+        self.groups[0].create(chave, valor)
+
+    def read(self, chave):
+        return self.groups[0].read(chave)
+
+    def update(self, chave, valor):
+        self.groups[0].update(chave, valor)
+
+    def delete(self, chave):
+        self.groups[0].delete(chave)
+
+    def run_raft(self):
+        groups = []
+        
+        for host in self.group_hosts:
+            partners = []
+            for host_2 in self.group_hosts:
+                if host != host_2:
+                    partners.append(host_2)
+
+            groups.append(HashTable(host, partners))
+
+        return groups
 
 class MainServer(object):
     def __init__(self, count_nodes, max_keys):
@@ -157,7 +210,8 @@ class MainServer(object):
                     (i * self.range_size)+1,((i + 1) * self.range_size) - 1
                 )
 
-            servers.append(Node(HOST, port, i, (i + 1) * self.range_size, value_range, self.send_to))
+            group_hosts = util.gen_group_hosts(i, GROUP_COUNT)
+            servers.append(Node(HOST, port, i, (i + 1) * self.range_size, value_range, self.send_to, group_hosts))
 
         for i in range(0, self.count_nodes):
             servers[i].fingertable = util.gen_finger_table(MAX_KEYS, servers[i].id, servers, self.count_nodes)
